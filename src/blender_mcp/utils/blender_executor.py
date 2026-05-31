@@ -77,16 +77,36 @@ class BlenderExecutor:
 
         try:
             logger.info(f"Initializing Blender executor with executable: {self.blender_executable}")
+            logger.info("[step 1/4] делаю шаг 1: locate and validate Blender executable")
 
             # Find and validate Blender executable
             self._locate_and_validate_blender()
 
+            logger.info("[step 2/4] делаю шаг 2: create temporary workspace")
             # Setup temporary directory
             self._setup_temp_directory()
 
-            # Test basic Blender functionality
-            self._test_blender_functionality()
+            logger.info("[step 3/4] делаю шаг 3: run Blender functionality probe")
+            # Test basic Blender functionality.
+            # Probe can false-timeout in some Windows daemon contexts, so allow
+            # turning it off (default off on Windows, on elsewhere).
+            probe_env = os.getenv("BLENDER_MCP_STARTUP_PROBE", "auto").strip().lower()
+            run_probe = True
+            if probe_env in {"0", "false", "no", "off"}:
+                run_probe = False
+            elif probe_env in {"1", "true", "yes", "on"}:
+                run_probe = True
+            elif probe_env == "auto":
+                run_probe = os.name != "nt"
 
+            if run_probe:
+                probe_ok = self._test_blender_functionality()
+                if not probe_ok:
+                    logger.warning("Startup probe timed out; continuing with executor initialization")
+            else:
+                logger.info("Skipping startup probe (BLENDER_MCP_STARTUP_PROBE=%s)", probe_env)
+
+            logger.info("[step 4/4] делаю шаг 4: executor initialized successfully")
             self._initialized = True
             logger.info(f"Blender executor initialized successfully - Version: {self.blender_version}")
 
@@ -216,7 +236,7 @@ class BlenderExecutor:
             logger.error(f"Failed to setup temp directory: {e!s}")
             raise BlenderScriptError("", f"Temp directory setup failed: {e!s}")
 
-    def _test_blender_functionality(self) -> None:
+    def _test_blender_functionality(self) -> bool:
         """Test basic Blender functionality with a simple script."""
         try:
             test_script = """
@@ -241,9 +261,8 @@ except Exception as e:
             with open(test_script_path, "w", encoding="utf-8") as f:
                 f.write(test_script)
 
-            # Ensure the Blender executable path is properly quoted for Windows
             blender_cmd = [
-                f'"{self.blender_path}"',  # Quote the path to handle spaces
+                str(self.blender_path),
             ]
 
             # Add headless flag only if running in headless mode
@@ -264,20 +283,13 @@ except Exception as e:
             blender_cmd.extend(
                 [
                     "--python",
-                    f'"{test_script_path}"',
+                    test_script_path,
                     "--",  # End of Blender arguments
                 ]
             )
 
-            # On Windows, we need to use shell=True and join the command parts
-            if os.name == "nt":
-                command = " ".join(blender_cmd)
-                logger.debug(f"Running command: {command}")
-                result = subprocess.run(command, capture_output=True, text=True, timeout=30, check=False, shell=True)
-            else:
-                # On Unix-like systems, we can pass the command as a list
-                logger.debug(f"Running command: {' '.join(blender_cmd)}")
-                result = subprocess.run(blender_cmd, capture_output=True, text=True, timeout=30, check=False)
+            logger.debug(f"Running command: {' '.join(blender_cmd)}")
+            result = subprocess.run(blender_cmd, capture_output=True, text=True, timeout=30, check=False)
 
             if result.returncode != 0:
                 logger.error(f"Blender functionality test failed: {result.stderr}")
@@ -289,10 +301,12 @@ except Exception as e:
                 raise BlenderScriptError(test_script, "Test script did not complete successfully")
 
             logger.debug("Blender functionality test passed")
+            return True
 
         except subprocess.TimeoutExpired as e:
             logger.error(f"Blender functionality test timed out: {e!s}")
-            raise BlenderScriptError(test_script, "Functionality test timed out")
+            logger.error("[stopper] executor stalled during step 3/4 while probing Blender startup")
+            return False
         except Exception as e:
             logger.error(f"Blender functionality test error: {e!s}")
             raise BlenderScriptError(test_script, f"Functionality test error: {e!s}")
@@ -306,6 +320,7 @@ except Exception as e:
         script_name: str | None = None,
     ) -> str:
         """Execute Python script in Blender with comprehensive error handling."""
+        logger.info("[script step 1/5] делаю шаг 1: ensure executor is initialized")
         self._initialize_executor()
 
         if timeout is None:
@@ -320,8 +335,10 @@ except Exception as e:
             if not script or not script.strip():
                 raise BlenderScriptError(script, "Empty or whitespace-only script provided")
 
+            logger.info("[script step 2/5] делаю шаг 2: wrap script with error handling")
             # Create temporary script file with error handling wrapper
             wrapped_script = self._wrap_script_with_error_handling(script, script_id)
+            logger.info("[script step 3/5] делаю шаг 3: write temporary script")
             script_path = self._write_temp_script(wrapped_script, script_id)
 
             try:
@@ -330,12 +347,14 @@ except Exception as e:
                     logger.warning(f"Blend file not found, using factory startup: {blend_file}")
                     blend_file = None
 
+                logger.info("[script step 4/5] делаю шаг 4: launch Blender process")
                 # Build comprehensive command
                 cmd = self._build_blender_command(script_path, blend_file)
 
                 # Execute with process monitoring
                 stdout, stderr = await self._execute_with_monitoring(cmd, timeout, script_id)
 
+                logger.info("[script step 5/5] делаю шаг 5: process Blender output")
                 # Process and validate output
                 result = self._process_script_output(stdout, stderr, script_id)
 
