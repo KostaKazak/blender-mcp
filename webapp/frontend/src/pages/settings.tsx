@@ -39,7 +39,7 @@ interface LLMConfig {
 
 export default function Settings() {
   const [serverHost, setServerHost] = useState("localhost");
-  const [serverPort, setServerPort] = useState(9876);
+  const [serverPort, setServerPort] = useState(10849);
   const [theme, setTheme] = useState("dark");
   const [autoSync, setAutoSync] = useState(true);
   const [notifications, setNotifications] = useState(true);
